@@ -355,6 +355,17 @@ internal static class Recorder
                     coverage = "complete"
                 });
             }
+            int? playerHealth = null, playerMaxHealth = null, opponentHealth = null, opponentMaxHealth = null;
+            for (int frame = message.Data.Frames.Count - 1; frame >= 0; frame--)
+            {
+                ReadHealth(message.Data.Frames[frame].PlayerUpdates, ref playerHealth, ref playerMaxHealth);
+                ReadHealth(message.Data.Frames[frame].OpponentUpdates, ref opponentHealth, ref opponentMaxHealth);
+                if (playerHealth.HasValue && playerMaxHealth.HasValue && opponentHealth.HasValue && opponentMaxHealth.HasValue) break;
+            }
+            if (playerHealth is > 0) metrics.Add(new { side = "player", metric = "health", value = playerHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            if (playerMaxHealth is > 0) metrics.Add(new { side = "player", metric = "health_max", value = playerMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            if (opponentHealth is > 0) metrics.Add(new { side = "opponent", metric = "health", value = opponentHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            if (opponentMaxHealth is > 0) metrics.Add(new { side = "opponent", metric = "health_max", value = opponentMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
         }
         catch (Exception error)
         {
@@ -394,6 +405,16 @@ internal static class Recorder
         opening = null;
         NativeBridge.Status($"已记录第 {o.Day} 天 PvP · 我方 {cards.Count(c => c.side == "player")} / 对手 {cards.Count(c => c.side == "opponent")} 张卡");
     }
+    private static void ReadHealth(CombatSimPlayerUpdate? update, ref int? health, ref int? max)
+    {
+        if (update == null) return;
+        foreach (var pair in update.Attributes)
+        {
+            if (pair.Key == EPlayerAttributeType.Health && !health.HasValue) health = pair.Value.CurrentValue;
+            else if (pair.Key == EPlayerAttributeType.HealthMax && !max.HasValue) max = pair.Value.CurrentValue;
+        }
+    }
+
     private static string? ReadEtag()
     {
         try
