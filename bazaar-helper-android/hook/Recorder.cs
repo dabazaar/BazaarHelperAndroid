@@ -355,17 +355,27 @@ internal static class Recorder
                     coverage = "complete"
                 });
             }
-            int? playerHealth = null, playerMaxHealth = null, opponentHealth = null, opponentMaxHealth = null;
-            for (int frame = message.Data.Frames.Count - 1; frame >= 0; frame--)
+            int? playerMaxHealth = null, opponentMaxHealth = null, opponentInitialHealth = null;
+            if (Data.Run?.Player?.Attributes != null && Data.Run.Player.Attributes.TryGetValue(EPlayerAttributeType.HealthMax, out var runHealthMax))
+                playerMaxHealth = runHealthMax;
+            for (int frame = 0; frame < message.Data.Frames.Count; frame++)
             {
-                ReadHealth(message.Data.Frames[frame].PlayerUpdates, ref playerHealth, ref playerMaxHealth);
-                ReadHealth(message.Data.Frames[frame].OpponentUpdates, ref opponentHealth, ref opponentMaxHealth);
-                if (playerHealth.HasValue && playerMaxHealth.HasValue && opponentHealth.HasValue && opponentMaxHealth.HasValue) break;
+                ReadHealthMax(message.Data.Frames[frame].PlayerUpdates, ref playerMaxHealth);
+                ReadHealthMax(message.Data.Frames[frame].OpponentUpdates, ref opponentMaxHealth);
+                ReadHealthFirst(message.Data.Frames[frame].OpponentUpdates, ref opponentInitialHealth);
+                if (playerMaxHealth.HasValue && opponentMaxHealth.HasValue) break;
             }
-            if (playerHealth is > 0) metrics.Add(new { side = "player", metric = "health", value = playerHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
-            if (playerMaxHealth is > 0) metrics.Add(new { side = "player", metric = "health_max", value = playerMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
-            if (opponentHealth is > 0) metrics.Add(new { side = "opponent", metric = "health", value = opponentHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
-            if (opponentMaxHealth is > 0) metrics.Add(new { side = "opponent", metric = "health_max", value = opponentMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            if (!opponentMaxHealth.HasValue) opponentMaxHealth = opponentInitialHealth;
+            if (playerMaxHealth is > 0)
+            {
+                metrics.Add(new { side = "player", metric = "health", value = playerMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+                metrics.Add(new { side = "player", metric = "health_max", value = playerMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            }
+            if (opponentMaxHealth is > 0)
+            {
+                metrics.Add(new { side = "opponent", metric = "health", value = opponentMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+                metrics.Add(new { side = "opponent", metric = "health_max", value = opponentMaxHealth.Value, unit = "amount", eventCount = 1, coverage = "complete" });
+            }
         }
         catch (Exception error)
         {
@@ -405,14 +415,17 @@ internal static class Recorder
         opening = null;
         NativeBridge.Status($"已记录第 {o.Day} 天 PvP · 我方 {cards.Count(c => c.side == "player")} / 对手 {cards.Count(c => c.side == "opponent")} 张卡");
     }
-    private static void ReadHealth(CombatSimPlayerUpdate? update, ref int? health, ref int? max)
+    private static void ReadHealthMax(CombatSimPlayerUpdate? update, ref int? max)
     {
-        if (update == null) return;
-        foreach (var pair in update.Attributes)
-        {
-            if (pair.Key == EPlayerAttributeType.Health && !health.HasValue) health = pair.Value.CurrentValue;
-            else if (pair.Key == EPlayerAttributeType.HealthMax && !max.HasValue) max = pair.Value.CurrentValue;
-        }
+        if (update == null || max.HasValue) return;
+        if (update.Attributes.TryGetValue(EPlayerAttributeType.HealthMax, out var attribute)) max = attribute.CurrentValue;
+    }
+
+    private static void ReadHealthFirst(CombatSimPlayerUpdate? update, ref int? initial)
+    {
+        if (update == null || initial.HasValue) return;
+        if (update.Attributes.TryGetValue(EPlayerAttributeType.Health, out var attribute)) initial = attribute.CurrentValue;
+        else if (update.Attributes.TryGetValue(EPlayerAttributeType.HealthMax, out attribute)) initial = attribute.CurrentValue;
     }
 
     private static string? ReadEtag()
