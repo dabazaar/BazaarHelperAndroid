@@ -80,6 +80,21 @@ internal static class Recorder
     private static string? HeroName(EHero? hero) =>
         hero == null || hero.Value == EHero.Common ? null : hero.Value.ToString();
 
+    /// <summary>Run-level prestige shown by the game; null when the client has no active run.</summary>
+    private static int? Prestige()
+    {
+        try
+        {
+            var player = Data.Run?.Player;
+            if (player?.Attributes == null) return null;
+            var it = player.Attributes.GetEnumerator();
+            while (it.MoveNext())
+                if (it.Current.Key == EPlayerAttributeType.Prestige) return it.Current.Value;
+        }
+        catch { }
+        return null;
+    }
+
     internal static void BlockPlayback()
     {
         opening = null;
@@ -113,8 +128,9 @@ internal static class Recorder
         var game = message.TryCast<NetMessageGameSim>();
         if (game == null || string.IsNullOrWhiteSpace(run))
             return;
+        var prestige = Prestige();
         if (game.Data.Run is { } progress)
-            NativeBridge.UpdateRun(run, progress.Victories, progress.Defeats, progress.Day, HeroName(Data.Run?.Player?.Hero));
+            NativeBridge.UpdateRun(run, progress.Victories, progress.Defeats, progress.Day, HeroName(Data.Run?.Player?.Hero), prestige);
         if (game.Data.CurrentState?.StateName == ERunState.PVPCombat)
         {
             var opponent = PlayerOpponent(game);
@@ -137,7 +153,7 @@ internal static class Recorder
         }
         var state = game.Data.CurrentState?.StateName.ToString();
         if (state is "EndRunDefeat" or "EndRunVictory")
-            NativeBridge.Complete(run);
+            NativeBridge.Complete(run, prestige);
     }
     private static List<CardRecord> OpeningCards(NetMessageGameSim message)
     {

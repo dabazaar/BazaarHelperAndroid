@@ -37,9 +37,12 @@ public final class CaptureBridge {
     }
   }
 
-  public static boolean complete(String run) {
+  public static boolean complete(String data) {
     try {
-      HelperApplication.engine().completeRun(run);
+      JSONObject payload = new JSONObject(data);
+      String run = payload.getString("runId");
+      Integer prestige = payload.has("prestige") && !payload.isNull("prestige") ? payload.getInt("prestige") : null;
+      HelperApplication.engine().completeRun(run, prestige);
       HelperApplication.wake();
       return true;
     } catch (Exception e) {

@@ -103,6 +103,38 @@ public final class SyncTests extends Instrumentation {
     yes(db.records("account-b", null).isEmpty(), "old and anonymous records not claimed");
     yes(db.records("account-a", null).size() == 2, "settlement stamp owns late save");
     binding("account-a", "a2");
+    engine.beginRun(
+        new JSONObject()
+            .put("runId", "run-prestige")
+            .put("gameMode", "Ranked")
+            .put("victories", 10)
+            .put("losses", 2)
+            .put("finalDay", 12)
+            .put("prestige", 20));
+    engine.completeRun("run-prestige", 20);
+    engine.sync();
+    yes(api.lastRun.optInt("prestige", -1) == 20, "settled run carries prestige");
+    engine.beginRun(
+        new JSONObject()
+            .put("runId", "run-prestige-zero")
+            .put("gameMode", "Ranked")
+            .put("victories", 10)
+            .put("losses", 0)
+            .put("finalDay", 10)
+            .put("prestige", 0));
+    engine.completeRun("run-prestige-zero", 0);
+    engine.sync();
+    yes(api.lastRun.has("prestige") && api.lastRun.optInt("prestige", -1) == 0, "zero prestige is kept");
+    engine.beginRun(
+        new JSONObject()
+            .put("runId", "run-prestige-progress")
+            .put("gameMode", "Ranked")
+            .put("victories", 3)
+            .put("losses", 1)
+            .put("finalDay", 5)
+            .put("prestige", 15));
+    engine.sync();
+    yes(api.lastRun.optInt("prestige", -1) == 15, "in-progress run publishes current prestige");
     api.incomplete = true;
     try {
       engine.sync();
