@@ -151,17 +151,30 @@ public final class SyncEngine {
               id,
               Instant.now().toString(),
               data.optString("gameMode", null),
-              data.has("victories") ? select(data, "victories losses finalDay").toString() : null,
+              data.has("victories") || data.has("prestige") ? select(data, "victories losses finalDay prestige").toString() : null,
               hero,
               owner
             });
   }
 
-  public void completeRun(String id) {
-    db.getWritableDatabase()
-        .execSQL(
-            "UPDATE run_facts SET ended=COALESCE(ended,?) WHERE id=?",
-            new Object[] {Instant.now().toString(), id});
+  public void completeRun(String id, Integer prestige) {
+    try {
+      String stored = null;
+      try (Cursor c = db.getReadableDatabase().rawQuery("SELECT facts FROM run_facts WHERE id=?", new String[] {id})) {
+        if (c.moveToFirst() && !c.isNull(0)) stored = c.getString(0);
+      }
+      JSONObject facts = stored == null || stored.isEmpty() ? new JSONObject() : new JSONObject(stored);
+      if (prestige != null) facts.put("prestige", prestige);
+      db.getWritableDatabase()
+          .execSQL(
+              "UPDATE run_facts SET ended=COALESCE(ended,?), facts=? WHERE id=?",
+              new Object[] {Instant.now().toString(), facts.length() == 0 ? null : facts.toString(), id});
+    } catch (Exception e) {
+      db.getWritableDatabase()
+          .execSQL(
+              "UPDATE run_facts SET ended=COALESCE(ended,?) WHERE id=?",
+              new Object[] {Instant.now().toString(), id});
+    }
   }
 
   public void capture(String stamp, JSONObject envelope) throws Exception {
@@ -402,11 +415,15 @@ public final class SyncEngine {
         r.put("startedAt", c.getString(0)).put("gameMode", c.getString(1));
         if (!r.has("hero") && !c.isNull(4) && !c.getString(4).isEmpty())
           r.put("hero", c.getString(4));
+        JSONObject facts = null;
         if (!c.isNull(3)) {
-          JSONObject facts = new JSONObject(c.getString(3));
+          facts = new JSONObject(c.getString(3));
           for (String key : new String[] {"victories", "losses", "finalDay"})
             if (facts.has(key)) r.put(key, facts.get(key));
         }
+        // Prestige is captured throughout the run but only published once the run ended; historical
+        // runs and older hooks simply omit it, so the mini program keeps the legacy wins/losses tier.
+        if (facts != null && facts.has("prestige")) r.put("prestige", facts.get("prestige"));
         if (!c.isNull(2)) r.put("result", r.optInt("victories") >= 10 ? "win" : "loss");
         if (!c.isNull(2) && b == null) r.put("completedAt", c.getString(2));
       }
