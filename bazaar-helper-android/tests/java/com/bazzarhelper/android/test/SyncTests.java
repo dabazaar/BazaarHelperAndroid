@@ -210,9 +210,20 @@ public final class SyncTests extends Instrumentation {
     JSONObject qr = engine.login();
     yes(qr.has("qrCode"), "binding protocol returns QR");
     api.fakeOwner = "account-c";
+    api.fakeNickname = "巴扎船长";
+    api.fakeAvatarUrl = "https://test.example/avatar.png";
     api.serverToken = db.session().getString("token");
     yes(engine.poll(), "binding poll validates bearer identity");
     yes("account-c".equals(db.session().optString("owner")), "binding stores account scope");
+    yes("巴扎船长".equals(db.session().optString("nickname")), "binding stores nickname");
+    yes("https://test.example/avatar.png".equals(db.session().optString("avatarUrl")), "binding stores avatarUrl");
+    api.fakeNickname = "新昵称";
+    yes(engine.checkSession(), "checkSession refreshes active session profile");
+    yes("新昵称".equals(db.session().optString("nickname")), "checkSession updates nickname");
+    api.unauthorized = true;
+    yes(!engine.checkSession(), "checkSession returns false when device is unbound (401)");
+    yes(db.session().optString("owner").isEmpty(), "unbound 401 clears local session");
+    api.unauthorized = false;
     int count = db.records("account-a", null).size();
     db.close();
     db = new RecordDatabase(c, name, "com.bazzarhelper.android.tests");
@@ -230,7 +241,7 @@ public final class SyncTests extends Instrumentation {
   private final class Fake implements SyncEngine.Transport {
     int calls, battles, revokes;
     boolean incomplete, unauthorized, loseRotationResponse;
-    String serverToken = "", fakeOwner = "account-b";
+    String serverToken = "", fakeOwner = "account-b", fakeNickname = "", fakeAvatarUrl = "";
     JSONObject lastRun;
     Action during;
 
@@ -255,7 +266,10 @@ public final class SyncTests extends Instrumentation {
       if (path.startsWith("/binding-sessions/")) return new JSONObject().put("status", "bound");
       if (path.equals("/device")) {
         if (!token.equals(serverToken)) throw new HttpApi.HttpFailure(401);
-        return new JSONObject().put("accountId", fakeOwner).put("accountAlias", "Test account");
+        JSONObject res = new JSONObject().put("accountId", fakeOwner).put("accountAlias", "Test account");
+        if (!fakeNickname.isEmpty()) res.put("nickname", fakeNickname);
+        if (!fakeAvatarUrl.isEmpty()) res.put("avatarUrl", fakeAvatarUrl);
+        return res;
       }
       if (path.equals("/device/token/refresh")) {
         serverToken = body.getString("deviceToken");

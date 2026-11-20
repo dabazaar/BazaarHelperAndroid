@@ -6,6 +6,7 @@ import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Insets;
 import android.net.*;
 import android.os.*;
 import android.provider.MediaStore;
@@ -31,15 +32,18 @@ public final class MainActivity extends Activity {
   private final ExecutorService io = Executors.newSingleThreadExecutor();
   private final Handler handler = new Handler(Looper.getMainLooper());
 
+  private ClientUpdate clientUpdate;
   private String screen = "";
   private TextView accountName, accountState, accountPill, gameState, recordPill, syncState,
       loginTitle, loginBody, loginHint, loginCancel;
   private ChunkyButton accountAction, launch, resetPosition, historyButton, syncButton, qrLogin,
       exportButton;
   private Switch timerSwitch, shareSwitch;
-  private View gameDot;
+  private View gameDot, accountAvatarFallback;
+  private ImageView accountAvatarView;
   private Sheet qrSheet, progressSheet;
-  private Bitmap qr;
+  private Bitmap qr, loadedAvatarBitmap;
+  private String loadedAvatarUrl = "";
   private boolean active, launching, syncing, bindingTimer, bindingShare, working, pending;
 
   private SyncEngine engine() {
@@ -53,6 +57,8 @@ public final class MainActivity extends Activity {
     window.setStatusBarColor(Ui.BG);
     window.setNavigationBarColor(Ui.BG);
     window.getDecorView().setSystemUiVisibility(0);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) window.setDecorFitsSystemWindows(false);
+    clientUpdate = new ClientUpdate(this, versionName());
     route();
   }
 
@@ -61,7 +67,30 @@ public final class MainActivity extends Activity {
     super.onResume();
     active = true;
     route();
+    if ("home".equals(screen)) verifySessionAsync();
     handler.postDelayed(tick, 2500);
+  }
+
+  private void verifySessionAsync() {
+    io.execute(
+        () -> {
+          boolean unbound = false;
+          try {
+            if (!engine().checkSession() && !bound()) unbound = true;
+          } catch (Exception ignored) {
+          }
+          final boolean lostBinding = unbound;
+          runOnUiThread(
+              () -> {
+                if (isFinishing() || !"home".equals(screen)) return;
+                if (lostBinding) {
+                  toast("设备已解绑或登录已失效，请重新扫码");
+                  route();
+                } else {
+                  refresh();
+                }
+              });
+        });
   }
 
   @Override
@@ -75,6 +104,7 @@ public final class MainActivity extends Activity {
   protected void onDestroy() {
     handler.removeCallbacks(tick);
     io.shutdown();
+    clientUpdate.close();
     super.onDestroy();
   }
 
@@ -82,6 +112,7 @@ public final class MainActivity extends Activity {
       new Runnable() {
         public void run() {
           if (!active) return;
+          clientUpdate.checkAutomatically();
           io.execute(
               () -> {
                 boolean confirmed = false;
@@ -148,7 +179,13 @@ public final class MainActivity extends Activity {
     ScrollView scroll = new ScrollView(this);
     scroll.setBackgroundColor(Ui.BG);
     scroll.setFillViewport(true);
-    scroll.setClipToPadding(false);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+        Insets safe = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        view.setPadding(safe.left, safe.top, safe.right, safe.bottom);
+        return insets;
+      });
+    }
     return scroll;
   }
 
@@ -192,7 +229,9 @@ public final class MainActivity extends Activity {
     if (badge != null) {
       ImageView icon = new ImageView(this);
       icon.setImageBitmap(badge);
-      icon.setContentDescription("大巴扎助手");
+      icon.setBackground(Ui.round(Ui.HERO, 12));
+      icon.setClipToOutline(true);
+      icon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
       mark = icon;
     } else {
       TextView letter = Ui.title(this, "巴", 19, Ui.ON_ACCENT);
@@ -206,12 +245,22 @@ public final class MainActivity extends Activity {
     row.addView(mark, markParams);
 
     LinearLayout titles = Ui.column(this);
-    titles.addView(Ui.eyebrow(this, "BAZAAR HELPER"));
-    titles.addView(Ui.spacer(this, 3));
-    titles.addView(Ui.title(this, "大巴扎助手", 26, Ui.INK));
-    row.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+    titles.addView(Ui.title(this, "大巴扎助手", 22, Ui.INK));
     String version = versionName();
-    row.addView(Ui.pill(this, version.isEmpty() ? "—" : "v" + version, Ui.ACCENT));
+    if (!version.isEmpty()) titles.addView(Ui.muted(this, "v" + version));
+    row.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+
+    Button update = new Button(this);
+    update.setAllCaps(false);
+    update.setTextColor(Ui.ACCENT);
+    update.setTextSize(13);
+    update.setMinWidth(Ui.dp(86));
+    update.setMinHeight(Ui.dp(48));
+    update.setMinimumHeight(Ui.dp(48));
+    update.setPadding(Ui.dp(10), 0, Ui.dp(10), 0);
+    Ui.pressable(update);
+    clientUpdate.bind(update);
+    row.addView(update, new LinearLayout.LayoutParams(-2, -2));
 
     LinearLayout header = Ui.column(this);
     header.setPadding(0, Ui.dp(2), 0, Ui.dp(16));
@@ -459,10 +508,15 @@ public final class MainActivity extends Activity {
     ScrollView scroll = shell();
     LinearLayout page = page(scroll);
     page.addView(header());
-    Ui.cardIn(page, accountCard());
     Ui.cardIn(page, gameCard());
-    Ui.cardIn(page, timerCard());
     Ui.cardIn(page, recordsCard());
+
+    TextView settings = Ui.title(this, "设置", 17, Ui.INK);
+    settings.setPadding(Ui.dp(2), Ui.dp(8), 0, Ui.dp(10));
+    settings.setAccessibilityHeading(true);
+    page.addView(settings);
+    Ui.cardIn(page, timerCard());
+    Ui.cardIn(page, accountCard());
     exportButton = ChunkyButton.secondary(this).label("导出日志").icon(Ui.Glyph.EXPORT);
     exportButton.setOnClickListener(v -> exportLogs());
     LinearLayout.LayoutParams exportParams = new LinearLayout.LayoutParams(-1, -2);
@@ -474,11 +528,20 @@ public final class MainActivity extends Activity {
 
   private LinearLayout accountCard() {
     LinearLayout card = Ui.card(this);
-    card.addView(Ui.eyebrow(this, "账号"));
-    card.addView(Ui.spacer(this, 12));
-
     LinearLayout head = Ui.row(this);
-    head.addView(Ui.tile(this, Ui.Glyph.ACCOUNT, 40, Ui.HERO, Ui.ACCENT));
+    int avatarSize = Ui.dp(40);
+    FrameLayout avatarHost = new FrameLayout(this);
+    avatarHost.setLayoutParams(new LinearLayout.LayoutParams(avatarSize, avatarSize));
+    accountAvatarFallback = Ui.tile(this, Ui.Glyph.ACCOUNT, 40, Ui.HERO, Ui.ACCENT);
+    accountAvatarView = new ImageView(this);
+    accountAvatarView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+    accountAvatarView.setBackground(Ui.round(Ui.HERO, 20));
+    accountAvatarView.setClipToOutline(true);
+    accountAvatarView.setVisibility(View.GONE);
+    accountAvatarView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    avatarHost.addView(accountAvatarFallback, new FrameLayout.LayoutParams(avatarSize, avatarSize));
+    avatarHost.addView(accountAvatarView, new FrameLayout.LayoutParams(avatarSize, avatarSize));
+    head.addView(avatarHost);
     LinearLayout names = Ui.column(this);
     names.setPadding(Ui.dp(12), 0, Ui.dp(8), 0);
     accountName = Ui.title(this, "正在读取账号…", 16.5f, Ui.INK);
@@ -491,7 +554,7 @@ public final class MainActivity extends Activity {
     head.addView(accountPill);
     card.addView(head);
 
-    accountAction = ChunkyButton.primary(this).label("账号管理").icon(Ui.Glyph.ACCOUNT);
+    accountAction = ChunkyButton.secondary(this).label("账号管理");
     LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, -2);
     actionParams.topMargin = Ui.dp(16);
     accountAction.setOnClickListener(v -> accountSheet());
@@ -507,8 +570,7 @@ public final class MainActivity extends Activity {
     shareRow.addView(shareText, new LinearLayout.LayoutParams(0, -2, 1));
     shareSwitch = new Switch(this);
     shareSwitch.setContentDescription("分享新战绩");
-    shareSwitch.setThumbTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
-    shareSwitch.setTrackTintList(android.content.res.ColorStateList.valueOf(Ui.CHIP));
+    styleSwitch(shareSwitch);
     shareRow.addView(shareSwitch);
     card.addView(shareRow);
     return card;
@@ -516,24 +578,16 @@ public final class MainActivity extends Activity {
 
   private LinearLayout gameCard() {
     LinearLayout card = Ui.card(this);
-    card.addView(Ui.eyebrow(this, "开始记录"));
-    card.addView(Ui.spacer(this, 12));
-
+    card.setBackground(new Ui.Depth(Ui.HERO, Ui.LINE, Ui.edge(Ui.HERO), 20, 3, 1.5f));
     LinearLayout head = Ui.row(this);
-    head.addView(Ui.tile(this, Ui.Glyph.PLAY, 40, Ui.RAISED, Ui.ACCENT));
+    head.addView(Ui.tile(this, Ui.Glyph.PLAY, 44, Ui.PANEL, Ui.ACCENT));
     LinearLayout titles = Ui.column(this);
     titles.setPadding(Ui.dp(12), 0, 0, 0);
-    titles.addView(Ui.title(this, "从助手启动游戏", 16.5f, Ui.INK));
+    titles.addView(Ui.title(this, "The Bazaar", 23, Ui.INK));
     titles.addView(Ui.spacer(this, 4));
-    titles.addView(Ui.muted(this, "自动记录双方棋盘、结算与战斗指标"));
+    titles.addView(Ui.muted(this, "记录双方棋盘、胜负与战斗指标"));
     head.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
     card.addView(head);
-
-    launch = ChunkyButton.primary(this).label("启动游戏").icon(Ui.Glyph.PLAY);
-    LinearLayout.LayoutParams launchParams = new LinearLayout.LayoutParams(-1, -2);
-    launchParams.topMargin = Ui.dp(16);
-    launch.setOnClickListener(v -> launch());
-    card.addView(launch, launchParams);
 
     LinearLayout status = Ui.row(this);
     status.setPadding(0, Ui.dp(12), 0, 0);
@@ -542,43 +596,36 @@ public final class MainActivity extends Activity {
     dotParams.rightMargin = Ui.dp(8);
     gameDot.setBackground(Ui.round(Ui.MUTED, 4));
     status.addView(gameDot, dotParams);
-    gameState = Ui.text(this, "从助手启动游戏后启用采集", 12.5f, Ui.MUTED, Ui.strong());
+    gameState = Ui.text(this, "启动游戏后自动采集", 12.5f, Ui.MUTED, Ui.strong());
     status.addView(gameState, new LinearLayout.LayoutParams(0, -2, 1));
     card.addView(status);
+
+    launch = ChunkyButton.primary(this).label("启动游戏").icon(Ui.Glyph.PLAY);
+    LinearLayout.LayoutParams launchParams = new LinearLayout.LayoutParams(-1, -2);
+    launchParams.topMargin = Ui.dp(14);
+    launch.setOnClickListener(v -> launch());
+    card.addView(launch, launchParams);
     return card;
   }
 
   private LinearLayout timerCard() {
     LinearLayout card = Ui.card(this);
-    card.addView(Ui.eyebrow(this, "计时器"));
-    card.addView(Ui.spacer(this, 12));
-
     LinearLayout head = Ui.row(this);
-    head.addView(Ui.tile(this, Ui.Glyph.CLOCK, 40, Ui.RAISED, Ui.ACCENT));
+    head.addView(Ui.tile(this, Ui.Glyph.CLOCK, 38, Ui.RAISED, Ui.ACCENT));
     LinearLayout titles = Ui.column(this);
-    titles.setPadding(Ui.dp(12), 0, 0, 0);
+    titles.setPadding(Ui.dp(10), 0, Ui.dp(8), 0);
     titles.addView(Ui.title(this, "悬浮计时器", 16.5f, Ui.INK));
     titles.addView(Ui.spacer(this, 4));
     titles.addView(Ui.muted(this, "战斗中显示用时，游戏中可拖动"));
     head.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
-    card.addView(head);
 
-    card.addView(Ui.divider(this));
-
-    LinearLayout toggleRow = Ui.row(this);
-    LinearLayout toggleText = Ui.column(this);
-    toggleText.addView(Ui.text(this, "显示计时器", 15, Ui.INK, Ui.strong()));
-    toggleText.addView(Ui.spacer(this, 3));
-    toggleText.addView(Ui.muted(this, "只影响显示，不影响采集"));
-    toggleRow.addView(toggleText, new LinearLayout.LayoutParams(0, -2, 1));
     timerSwitch = new Switch(this);
     timerSwitch.setContentDescription("显示计时器");
-    timerSwitch.setThumbTintList(android.content.res.ColorStateList.valueOf(Ui.ACCENT));
-    timerSwitch.setTrackTintList(android.content.res.ColorStateList.valueOf(Ui.CHIP));
-    toggleRow.addView(timerSwitch);
-    card.addView(toggleRow);
+    styleSwitch(timerSwitch);
+    head.addView(timerSwitch);
+    card.addView(head);
 
-    resetPosition = ChunkyButton.secondary(this).label("恢复默认位置").icon(Ui.Glyph.CLOCK);
+    resetPosition = ChunkyButton.secondary(this).label("恢复默认位置");
     LinearLayout.LayoutParams resetParams = new LinearLayout.LayoutParams(-1, -2);
     resetParams.topMargin = Ui.dp(14);
     resetPosition.setOnClickListener(v -> resetTimerPosition());
@@ -586,11 +633,15 @@ public final class MainActivity extends Activity {
     return card;
   }
 
+  private static void styleSwitch(Switch toggle) {
+    int[][] states = {{android.R.attr.state_checked}, {}};
+    toggle.setMinHeight(Ui.dp(48));
+    toggle.setThumbTintList(new android.content.res.ColorStateList(states, new int[] {Ui.ACCENT, Ui.MUTED}));
+    toggle.setTrackTintList(new android.content.res.ColorStateList(states, new int[] {Ui.HERO, Ui.CHIP}));
+  }
+
   private LinearLayout recordsCard() {
     LinearLayout card = Ui.card(this);
-    card.addView(Ui.eyebrow(this, "战绩"));
-    card.addView(Ui.spacer(this, 12));
-
     LinearLayout head = Ui.row(this);
     head.addView(Ui.tile(this, Ui.Glyph.RECORDS, 40, Ui.RAISED, Ui.ACCENT));
     LinearLayout titles = Ui.column(this);
@@ -604,19 +655,25 @@ public final class MainActivity extends Activity {
     head.addView(recordPill);
     card.addView(head);
 
-    LinearLayout actions = Ui.row(this);
+    boolean stack =
+        getResources().getConfiguration().fontScale > 1.3f
+            || getResources().getConfiguration().screenWidthDp < 340;
+    LinearLayout actions = stack ? Ui.column(this) : Ui.row(this);
     LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(-1, -2);
-    actionsParams.topMargin = Ui.dp(16);
+    actionsParams.topMargin = Ui.dp(12);
     historyButton = ChunkyButton.secondary(this).label("查看战绩");
     historyButton.setOnClickListener(v -> history());
-    LinearLayout.LayoutParams leftParams = new LinearLayout.LayoutParams(0, -2, 1);
-    leftParams.rightMargin = Ui.dp(6);
-    actions.addView(historyButton, leftParams);
-    syncButton = ChunkyButton.secondary(this).label("立即同步").icon(Ui.Glyph.SYNC);
+    actions.addView(historyButton, stack
+        ? new LinearLayout.LayoutParams(-1, -2)
+        : new LinearLayout.LayoutParams(0, -2, 1));
+    syncButton = ChunkyButton.secondary(this).label("立即同步");
     syncButton.setOnClickListener(v -> syncNow());
-    LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, -2, 1);
-    rightParams.leftMargin = Ui.dp(6);
-    actions.addView(syncButton, rightParams);
+    LinearLayout.LayoutParams syncParams = stack
+        ? new LinearLayout.LayoutParams(-1, -2)
+        : new LinearLayout.LayoutParams(0, -2, 1);
+    if (stack) syncParams.topMargin = Ui.dp(8);
+    else syncParams.leftMargin = Ui.dp(8);
+    actions.addView(syncButton, syncParams);
     card.addView(actions, actionsParams);
     return card;
   }
@@ -695,15 +752,54 @@ public final class MainActivity extends Activity {
         });
   }
 
+  private Bitmap loadAvatarBitmap(String url) {
+    if (url == null || url.isEmpty()) {
+      loadedAvatarUrl = "";
+      loadedAvatarBitmap = null;
+      return null;
+    }
+    if (url.equals(loadedAvatarUrl) && loadedAvatarBitmap != null) return loadedAvatarBitmap;
+    java.net.HttpURLConnection conn = null;
+    try {
+      conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+      conn.setConnectTimeout(8000);
+      conn.setReadTimeout(10000);
+      conn.setInstanceFollowRedirects(true);
+      if (conn.getResponseCode() != 200) return loadedAvatarBitmap;
+      java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+      try (java.io.InputStream in = conn.getInputStream()) {
+        byte[] buf = new byte[8192];
+        int n;
+        while ((n = in.read(buf)) != -1) {
+          out.write(buf, 0, n);
+          if (out.size() > 512 * 1024) return loadedAvatarBitmap;
+        }
+      }
+      byte[] bytes = out.toByteArray();
+      Bitmap decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+      if (decoded != null) {
+        loadedAvatarUrl = url;
+        loadedAvatarBitmap = decoded;
+      }
+      return loadedAvatarBitmap;
+    } catch (Exception ignored) {
+      return loadedAvatarBitmap;
+    } finally {
+      if (conn != null) conn.disconnect();
+    }
+  }
+
   private void refresh() {
     io.execute(
         () -> {
-          String alias = "", owner = "", sync = "", hook = "";
+          String alias = "", nickname = "", avatarUrl = "", owner = "", sync = "", hook = "";
           int records = 0;
           boolean failed = false;
           try {
             JSONObject s = engine().db.session();
             alias = s.optString("alias");
+            nickname = s.optString("nickname");
+            avatarUrl = s.optString("avatarUrl");
             owner = s.optString("owner");
             sync = engine().db.get("syncStatus", "");
             hook = engine().db.get("hookStatus", "");
@@ -711,6 +807,7 @@ public final class MainActivity extends Activity {
           } catch (Exception e) {
             failed = true;
           }
+          Bitmap avatar = owner.isEmpty() ? null : loadAvatarBitmap(avatarUrl);
           boolean running = false;
           ActivityManager manager = getSystemService(ActivityManager.class);
           List<ActivityManager.RunningAppProcessInfo> processes = manager.getRunningAppProcesses();
@@ -719,39 +816,62 @@ public final class MainActivity extends Activity {
               if ((getPackageName() + ":game").equals(process.processName)) running = true;
 
           final String fAlias = alias,
+              fNickname = nickname,
               fOwner = owner,
               fSync = sync,
               fHook = hook;
+          final Bitmap fAvatar = avatar;
           final int fRecords = records;
           final boolean fRunning = running, fFailed = failed;
           runOnUiThread(
               () -> {
                 if (isFinishing() || !"home".equals(screen)) return;
-                apply(fAlias, fOwner, fSync, fHook, fRecords, fRunning, fFailed);
+                if (!fFailed && fOwner.isEmpty()) {
+                  toast("设备已解绑或登录已失效，请重新扫码");
+                  route();
+                  return;
+                }
+                apply(fAlias, fNickname, fAvatar, fOwner, fSync, fHook, fRecords, fRunning, fFailed);
               });
         });
   }
 
   private void apply(
       String alias,
+      String nickname,
+      Bitmap avatar,
       String owner,
       String sync,
       String hook,
       int records,
       boolean running,
       boolean failed) {
+    if (accountAvatarView != null && accountAvatarFallback != null) {
+      if (avatar != null && !failed && !owner.isEmpty()) {
+        accountAvatarView.setImageBitmap(avatar);
+        accountAvatarView.setVisibility(View.VISIBLE);
+        accountAvatarFallback.setVisibility(View.GONE);
+      } else {
+        accountAvatarView.setImageBitmap(null);
+        accountAvatarView.setVisibility(View.GONE);
+        accountAvatarFallback.setVisibility(View.VISIBLE);
+      }
+    }
     if (failed || owner.isEmpty()) {
       accountName.setText("正在确认账号…");
       accountState.setText("读取账号信息");
       setPill(accountPill, "确认中", Ui.MUTED);
     } else {
-      accountName.setText(alias.isEmpty() ? "微信账号" : alias);
-      accountState.setText("新战绩会自动同步到小程序");
+      String trimmedNickname = nickname == null ? "" : nickname.trim();
+      String fallbackAlias = alias == null || alias.isEmpty() ? "微信账号" : alias;
+      accountName.setText(trimmedNickname.isEmpty() ? fallbackAlias : trimmedNickname);
+      accountState.setText(
+          trimmedNickname.isEmpty() ? "新战绩会自动同步到小程序" : fallbackAlias + " · 自动同步到小程序");
       setPill(accountPill, "已绑定", Ui.WIN);
     }
     recordPill.setText(records + " 场");
     syncState.setText(syncText(sync));
-    gameState.setText(running ? (hook.isEmpty() ? "采集中" : hook) : "从助手启动游戏后启用采集");
+    gameState.setText(running ? (hook.isEmpty() ? "采集中" : hook) : "启动游戏后自动采集");
     gameState.setTextColor(running ? Ui.WIN : Ui.MUTED);
     gameDot.setBackground(Ui.round(running ? Ui.WIN : Ui.MUTED, 4));
   }
@@ -784,8 +904,10 @@ public final class MainActivity extends Activity {
     JSONObject session = session();
     String owner = session == null ? "" : session.optString("owner");
     String alias = session == null ? "" : session.optString("alias", "微信账号");
+    String nickname = session == null ? "" : session.optString("nickname", "").trim();
+    String display = !nickname.isEmpty() ? nickname + "（" + alias + "）" : alias;
     new Sheet(
-            this, "账号", owner.isEmpty() ? "等待扫码确认" : "已绑定 " + alias)
+            this, "账号", owner.isEmpty() ? "等待扫码确认" : "已绑定 " + display)
         .message("退出后本机历史战绩仍保留；再次登录同一微信账号即可看到，其他账号不能认领。")
         .danger("退出 / 重新绑定", this::logout)
         .secondary("关闭", null)
@@ -987,15 +1109,27 @@ public final class MainActivity extends Activity {
     io.execute(
         () -> {
           String message;
+          boolean unbound = false;
           try {
-            engine().sync();
-            message = "同步完成";
-            Diag.i("sync", "ok");
+            if (!engine().checkSession() && !bound()) {
+              unbound = true;
+              message = "设备已解绑或登录已失效，请重新扫码";
+            } else {
+              engine().sync();
+              message = "同步完成";
+              Diag.i("sync", "ok");
+            }
           } catch (Exception e) {
-            message = describe(e);
+            if (e instanceof HttpApi.HttpFailure && ((HttpApi.HttpFailure) e).status == 401 && !bound()) {
+              unbound = true;
+              message = "设备已解绑或登录已失效，请重新扫码";
+            } else {
+              message = describe(e);
+            }
             Diag.e("sync", "failed", e);
           }
           final String result = message;
+          final boolean lostBinding = unbound;
           runOnUiThread(
               () -> {
                 syncing = false;
@@ -1005,7 +1139,8 @@ public final class MainActivity extends Activity {
                 }
                 if (!isFinishing()) {
                   toast(result);
-                  refresh();
+                  if (lostBinding) route();
+                  else refresh();
                 }
               });
         });

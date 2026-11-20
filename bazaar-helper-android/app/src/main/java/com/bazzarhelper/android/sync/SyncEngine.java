@@ -82,6 +82,8 @@ public final class SyncEngine {
           if (owner.isEmpty()) throw new IOException("无效账号");
           s.put("owner", owner)
               .put("alias", me.optString("accountAlias", "微信账号"))
+              .put("nickname", me.optString("nickname", ""))
+              .put("avatarUrl", me.optString("avatarUrl", ""))
               .put("checkedAt", System.currentTimeMillis())
               .put("rotatedAt", System.currentTimeMillis());
           s.remove("nonce");
@@ -92,6 +94,43 @@ public final class SyncEngine {
                   new Object[] {s.getString("generation"), owner});
           return true;
         });
+  }
+
+  /** Verifies device binding with /device and refreshes profile fields; clears local session on 401. */
+  public boolean checkSession() throws Exception {
+    JSONObject s = db.session();
+    String owner = s.optString("owner");
+    String token = s.optString("token");
+    if (owner.isEmpty() || token.isEmpty()) return false;
+    try {
+      JSONObject me = api.request("GET", "/device", token, null);
+      if (!owner.equals(me.optString("accountId"))) throw new HttpApi.HttpFailure(401);
+      db.transaction(
+          () -> {
+            if (db.isCurrent(s)) {
+              s.put("alias", me.optString("accountAlias", s.optString("alias", "微信账号")))
+                  .put("nickname", me.optString("nickname", ""))
+                  .put("avatarUrl", me.optString("avatarUrl", ""))
+                  .put("checkedAt", System.currentTimeMillis());
+              db.session(s);
+            }
+            return null;
+          });
+      return true;
+    } catch (HttpApi.HttpFailure failure) {
+      if (failure.status == 401) {
+        db.transaction(
+            () -> {
+              if (db.isCurrent(s)) {
+                db.session(new JSONObject());
+                db.put("syncStatus", "设备已解绑或登录已失效，请重新扫码");
+              }
+              return null;
+            });
+        return false;
+      }
+      throw failure;
+    }
   }
 
   /** Drops an unclaimed binding session so a fresh code / link can be requested. */
@@ -258,13 +297,16 @@ public final class SyncEngine {
         activeSession = s;
         String owner = s.optString("owner");
         if (owner.isEmpty()) return;
-        if (System.currentTimeMillis() - s.optLong("checkedAt") > 86400000L) {
+        if (System.currentTimeMillis() - s.optLong("checkedAt") > 60000L) {
           JSONObject me = api.request("GET", "/device", s.getString("token"), null);
           if (!owner.equals(me.optString("accountId"))) throw new IOException("账号不匹配");
           db.transaction(
               () -> {
                 if (db.isCurrent(s)) {
-                  s.put("checkedAt", System.currentTimeMillis());
+                  s.put("alias", me.optString("accountAlias", s.optString("alias", "微信账号")))
+                      .put("nickname", me.optString("nickname", ""))
+                      .put("avatarUrl", me.optString("avatarUrl", ""))
+                      .put("checkedAt", System.currentTimeMillis());
                   db.session(s);
                 }
                 return null;
@@ -300,7 +342,7 @@ public final class SyncEngine {
               () -> {
                 if (db.isCurrent(expected)) {
                   db.session(new JSONObject());
-                  db.put("syncStatus", "登录已失效，请重新扫码");
+                  db.put("syncStatus", "设备已解绑或登录已失效，请重新扫码");
                 }
                 return null;
               });
