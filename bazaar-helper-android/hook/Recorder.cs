@@ -13,11 +13,12 @@ namespace BazaarHelper;
 internal static class Recorder
 {
     internal static ManualLogSource Log = null!;
+    private static string? gameMode;
     private static string run = ""; private static Opening? opening; private static readonly HashSet<string> Settled = new();
     // One player fight per run per day; the client keeps reporting PVPCombat after a fight settles.
     private static readonly HashSet<string> RecordedDays = new();
     private static string lastOpponentSources = "";
-    private sealed record Opening(string Run, int Day, int Hour, string Hero, string Opponent, string? DataVersion, string? Etag, List<CardRecord> Cards);
+    private sealed record Opening(string Run, int Day, int Hour, string Hero, string Opponent, string? DataVersion, string? Etag, int? PlayerGold, List<CardRecord> Cards);
     internal sealed class CardRecord
     {
         public string side { get; set; } = "player"; public string zone { get; set; } = "items"; public string templateId { get; set; } = ""; public string instanceId { get; set; } = ""; public string? name
@@ -95,6 +96,15 @@ internal static class Recorder
         return null;
     }
 
+    private static int? OpeningGold(NetMessageGameSim game)
+    {
+        if (game.Data.Player?.Attributes is { } updated && updated.TryGetValue(EPlayerAttributeType.Gold, out var gold))
+            return gold >= 0 ? gold : null;
+        if (Data.Run?.Player?.Attributes is { } live && live.TryGetValue(EPlayerAttributeType.Gold, out var balance))
+            return balance >= 0 ? balance : null;
+        return null;
+    }
+
     internal static void BlockPlayback()
     {
         opening = null;
@@ -120,9 +130,12 @@ internal static class Recorder
             if (run != initialized.RunId)
             {
                 opening = null;
+                SeasonRankCapture.Reset();
                 run = initialized.RunId;
+                gameMode = null;
             }
-            NativeBridge.Begin(run, initialized.PlayMode, HeroName(Data.Run?.Player?.Hero));
+            if (initialized.PlayMode is "Ranked" or "Unranked") gameMode = initialized.PlayMode;
+            NativeBridge.Begin(run, gameMode, HeroName(Data.Run?.Player?.Hero));
             return;
         }
         var game = message.TryCast<NetMessageGameSim>();
@@ -148,12 +161,15 @@ internal static class Recorder
                 return;
             if (day > 0 && !RecordedDays.Add(fight))
                 return;
-            opening = new Opening(run, day, hour, HeroName(live?.Player?.Hero) ?? "", opponent.Hero.ToString(), game.Data.Run?.DataVersion ?? live?.DataVersion?.ToString(), ReadEtag(), cards);
+            opening = new Opening(run, day, hour, HeroName(live?.Player?.Hero) ?? "", opponent.Hero.ToString(), game.Data.Run?.DataVersion ?? live?.DataVersion?.ToString(), ReadEtag(), OpeningGold(game), cards);
             Log.LogInfo($"PvP opening: player={cards.Count(c => c.side == "player")}, opponent={cards.Count(c => c.side == "opponent")}, opponent hero={opponent.Hero}, enchanted={cards.Count(c => c.side == "player" && c.zone == "items" && c.enchant != null)}");
         }
         var state = game.Data.CurrentState?.StateName.ToString();
         if (state is "EndRunDefeat" or "EndRunVictory")
+        {
             NativeBridge.Complete(run, prestige);
+            if (gameMode == "Ranked") SeasonRankCapture.AwaitSettlement(run);
+        }
     }
     private static List<CardRecord> OpeningCards(NetMessageGameSim message)
     {
@@ -399,6 +415,7 @@ internal static class Recorder
                     hour = o.Hour,
                     playerHero = HeroName(Data.Run?.Player?.Hero) ?? o.Hero,
                     opponentHero = o.Opponent,
+                    playerGold = o.PlayerGold,
                     result = outcome,
                     durationMs = Math.Max(0, message.Data.Frames.Count - 1) * 50,
                     captureStatus = complete ? "complete" : "partial"

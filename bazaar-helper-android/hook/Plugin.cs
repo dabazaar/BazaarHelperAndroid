@@ -27,6 +27,8 @@ public sealed class Plugin : BasePlugin
         {
             Log.LogWarning("Battle timer hooks unavailable: " + error.GetType().Name);
         }
+        try { SeasonRankCapture.Install(harmony); }
+        catch (Exception error) { Log.LogWarning("Settlement rank hooks unavailable: " + error.GetType().Name); }
         _ = NativeBridge.Session();
         NativeBridge.Status("战绩采集已就绪");
         Log.LogInfo("BazaarHelper recorder ready: dispatch + combat; no gameplay modifications");

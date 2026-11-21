@@ -41,6 +41,12 @@ public final class CaptureBridge {
     try {
       JSONObject payload = new JSONObject(data);
       String run = payload.getString("runId");
+      JSONObject rank = payload.optJSONObject("seasonRank");
+      if (rank != null) {
+        HelperApplication.engine().saveSeasonRank(run, payload.getString("stamp"), rank);
+        HelperApplication.wake();
+        return true;
+      }
       Integer prestige = payload.has("prestige") && !payload.isNull("prestige") ? payload.getInt("prestige") : null;
       HelperApplication.engine().completeRun(run, prestige);
       HelperApplication.wake();

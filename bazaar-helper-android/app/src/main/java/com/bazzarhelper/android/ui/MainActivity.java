@@ -1053,18 +1053,19 @@ public final class MainActivity extends Activity {
           try {
             String owner = engine().db.session().optString("owner");
             List<JSONObject> records = engine().db.records(owner, null);
-            if (records.isEmpty()) {
+            List<JSONObject> runs = engine().db.recentRunModes(owner);
+            if (records.isEmpty() && runs.isEmpty()) {
               runOnUiThread(() -> error("暂无本账号战绩。从助手启动游戏并完成一场 PvP 后会自动保存。"));
               return;
             }
-            runOnUiThread(() -> showHistory(records));
+            runOnUiThread(() -> showHistory(records, runs));
           } catch (Exception e) {
             runOnUiThread(() -> error("战绩读取失败"));
           }
         });
   }
 
-  private void showHistory(List<JSONObject> records) {
+  private void showHistory(List<JSONObject> records, List<JSONObject> runs) {
     TreeMap<Integer, int[]> days = new TreeMap<>(Comparator.reverseOrder());
     for (JSONObject record : records) {
       try {
@@ -1082,6 +1083,21 @@ public final class MainActivity extends Activity {
     Sheet sheet =
         new Sheet(this, "战绩", days.size() + " 天 · " + records.size() + " 场 PvP")
             .message(records.size() + " 场里 " + totalWins + " 胜 " + totalLosses + " 负，每天一条汇总。");
+    if (!runs.isEmpty()) {
+      sheet.item(Ui.text(this, "最近对局", 15, Ui.MUTED, Ui.strong()), null);
+      for (JSONObject run : runs) {
+        LinearLayout row = Ui.row(this);
+        row.setPadding(Ui.dp(4), Ui.dp(10), Ui.dp(4), Ui.dp(10));
+        String mode = "Ranked".equals(run.optString("gameMode")) ? "排位" : "休闲";
+        String started = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm")
+            .withZone(java.time.ZoneId.systemDefault()).format(Instant.parse(run.optString("startedAt")));
+        row.addView(Ui.muted(this, started + " · " + mode), new LinearLayout.LayoutParams(0, -2, 1));
+        String rank = rankLabel(run.optJSONObject("seasonRank"));
+        if (!rank.isEmpty()) row.addView(Ui.muted(this, rank));
+        sheet.item(row, null);
+      }
+      if (!days.isEmpty()) sheet.item(Ui.text(this, "每日 PvP", 15, Ui.MUTED, Ui.strong()), null);
+    }
     for (Map.Entry<Integer, int[]> day : days.entrySet()) {
       int wins = day.getValue()[0], losses = day.getValue()[1];
       LinearLayout row = Ui.row(this);
@@ -1099,6 +1115,27 @@ public final class MainActivity extends Activity {
       sheet.item(row, null);
     }
     sheet.secondary("关闭", null).show();
+  }
+
+  private static String rankLabel(JSONObject rank) {
+    if (rank == null) return "";
+    String label = switch (rank.optString("rank")) {
+      case "Bronze" -> "青铜";
+      case "Silver" -> "白银";
+      case "Gold" -> "黄金";
+      case "Diamond" -> "钻石";
+      case "Legendary" -> "传说";
+      default -> "";
+    };
+    if (label.isEmpty()) return label;
+    if ("Legendary".equals(rank.optString("rank"))) {
+      int position = rank.optInt("leaderboardPosition");
+      return position > 0 ? label + " #" + position : label;
+    }
+    String[] divisions = {"", " I", " II", " III", " IV", " V"};
+    int division = rank.optInt("division");
+    return label + (division > 0 && division < divisions.length ? divisions[division] : "")
+        + " · " + rank.optInt("rankPoints") + " 胜点";
   }
 
   private void syncNow() {
