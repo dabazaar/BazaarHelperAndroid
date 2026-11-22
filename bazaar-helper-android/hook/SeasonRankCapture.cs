@@ -50,19 +50,23 @@ internal static class SeasonRankCapture
         catch (Exception error) { Recorder.Log.LogWarning("Rank listener unavailable: " + error.GetType().Name); }
     }
 
-    private static void RankReady(EndOfRunRankController __instance, Il2CppSystem.Threading.Tasks.Task<bool> __result)
+    private static void RankReady(EndOfRunRankController __instance, EndOfRunScreenController __0,
+        Il2CppSystem.Threading.Tasks.Task<bool> __result)
     {
         string? run = pendingRun;
         string? session = stamp;
         if (run == null || session == null || refreshedRank is not { } value) return;
         try
         {
+            // The game takes this copy before refreshing the rank for this settlement.
+            var before = __0.CommonData.CurrentSeasonRank;
+            int? ratingBefore = before != null && before.SeasonID == value.SeasonID ? before.Rating : null;
             var awaiter = __result.GetAwaiter();
             void OnCompleted()
             {
                 try
                 {
-                    if (awaiter.GetResult()) Persist(__instance, run, session, value);
+                    if (awaiter.GetResult()) Persist(__instance, run, session, value, ratingBefore);
                 }
                 catch (Exception error) { Recorder.Log.LogWarning("Rank capture unavailable: " + error.GetType().Name); }
             }
@@ -72,7 +76,8 @@ internal static class SeasonRankCapture
         catch (Exception error) { Recorder.Log.LogWarning("Rank completion listener unavailable: " + error.GetType().Name); }
     }
 
-    private static void Persist(EndOfRunRankController controller, string run, string session, PlayerRankResponse value)
+    private static void Persist(EndOfRunRankController controller, string run, string session,
+        PlayerRankResponse value, int? ratingBefore)
     {
         if (pendingRun != run || stamp != session || session != NativeBridge.Session() ||
             value.SeasonID <= 0 || value.Rank != controller.postRunRank ||
@@ -82,7 +87,7 @@ internal static class SeasonRankCapture
         int position = controller.postRunLeaderboardPosition;
         NativeBridge.SaveRank(run, session, new {
             seasonId = value.SeasonID, rank = value.Rank.ToString(), division = value.Division,
-            rankPoints = value.RankPoints, rating = value.Rating,
+            rankPoints = value.RankPoints, rating = value.Rating, ratingBefore,
             leaderboardPosition = value.Rank == ERank.Legendary && position > 0 ? (int?)position : null,
             seasonName = sameSeason ? season.name : null,
             seasonTitle = sameSeason ? season.title : null,
