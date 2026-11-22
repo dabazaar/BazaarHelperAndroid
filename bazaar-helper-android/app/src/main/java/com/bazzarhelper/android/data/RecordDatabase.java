@@ -23,7 +23,7 @@ public final class RecordDatabase extends SQLiteOpenHelper {
         context,
         new File(context.getNoBackupFilesDir(), name + ".sqlite").getAbsolutePath(),
         null,
-        4);
+        5);
     directory = context.getNoBackupFilesDir();
     cipher = new CredentialCipher(alias);
     setWriteAheadLoggingEnabled(true);
@@ -35,7 +35,7 @@ public final class RecordDatabase extends SQLiteOpenHelper {
     db.execSQL("CREATE TABLE sessions(stamp TEXT PRIMARY KEY,owner TEXT NOT NULL)");
     db.execSQL(
         "CREATE TABLE run_facts(id TEXT PRIMARY KEY,started TEXT NOT NULL,mode TEXT,ended"
-            + " TEXT,facts TEXT,hero TEXT,owner TEXT)");
+            + " TEXT,facts TEXT,hero TEXT,owner TEXT,season_rank TEXT)");
     db.execSQL(
         "CREATE TABLE battles(owner TEXT NOT NULL,id TEXT NOT NULL,run_id TEXT NOT NULL,recorded"
             + " TEXT NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(owner,id))");
@@ -64,11 +64,15 @@ public final class RecordDatabase extends SQLiteOpenHelper {
       com.bazzarhelper.android.Diag.i("db", "dropped " + removed + " uploaded non-player battles");
       oldVersion = 3;
     }
-    if (oldVersion == 3 && newVersion == 4) {
+    if (oldVersion == 3 && newVersion >= 4) {
       // A run is uploaded from its own row now, so it needs the hero shown before the first battle and
       // the owner it belongs to (run_facts previously had neither).
       db.execSQL("ALTER TABLE run_facts ADD COLUMN hero TEXT");
       db.execSQL("ALTER TABLE run_facts ADD COLUMN owner TEXT");
+      oldVersion = 4;
+    }
+    if (oldVersion == 4 && newVersion == 5) {
+      db.execSQL("ALTER TABLE run_facts ADD COLUMN season_rank TEXT");
       return;
     }
     throw new IllegalStateException("Unsupported database migration");
@@ -150,6 +154,20 @@ public final class RecordDatabase extends SQLiteOpenHelper {
       while (c.moveToNext()) result.add(c.getString(0));
     }
     return result;
+  }
+
+  public List<JSONObject> recentRunModes(String owner) throws Exception {
+    List<JSONObject> runs = new ArrayList<>();
+    try (Cursor c = getReadableDatabase().rawQuery(
+        "SELECT started,mode,season_rank FROM run_facts WHERE owner=? AND mode IN ('Ranked','Unranked')"
+            + " ORDER BY started DESC LIMIT 10", new String[] {owner})) {
+      while (c.moveToNext()) {
+        JSONObject run = new JSONObject().put("startedAt", c.getString(0)).put("gameMode", c.getString(1));
+        if (!c.isNull(2)) run.put("seasonRank", new JSONObject(c.getString(2)));
+        runs.add(run);
+      }
+    }
+    return runs;
   }
 
   public List<String> runIds(String owner) {

@@ -82,6 +82,8 @@ public final class SyncEngine {
           if (owner.isEmpty()) throw new IOException("无效账号");
           s.put("owner", owner)
               .put("alias", me.optString("accountAlias", "微信账号"))
+              .put("nickname", me.optString("nickname", ""))
+              .put("avatarUrl", me.optString("avatarUrl", ""))
               .put("checkedAt", System.currentTimeMillis())
               .put("rotatedAt", System.currentTimeMillis());
           s.remove("nonce");
@@ -92,6 +94,43 @@ public final class SyncEngine {
                   new Object[] {s.getString("generation"), owner});
           return true;
         });
+  }
+
+  /** Verifies device binding with /device and refreshes profile fields; clears local session on 401. */
+  public boolean checkSession() throws Exception {
+    JSONObject s = db.session();
+    String owner = s.optString("owner");
+    String token = s.optString("token");
+    if (owner.isEmpty() || token.isEmpty()) return false;
+    try {
+      JSONObject me = api.request("GET", "/device", token, null);
+      if (!owner.equals(me.optString("accountId"))) throw new HttpApi.HttpFailure(401);
+      db.transaction(
+          () -> {
+            if (db.isCurrent(s)) {
+              s.put("alias", me.optString("accountAlias", s.optString("alias", "微信账号")))
+                  .put("nickname", me.optString("nickname", ""))
+                  .put("avatarUrl", me.optString("avatarUrl", ""))
+                  .put("checkedAt", System.currentTimeMillis());
+              db.session(s);
+            }
+            return null;
+          });
+      return true;
+    } catch (HttpApi.HttpFailure failure) {
+      if (failure.status == 401) {
+        db.transaction(
+            () -> {
+              if (db.isCurrent(s)) {
+                db.session(new JSONObject());
+                db.put("syncStatus", "设备已解绑或登录已失效，请重新扫码");
+              }
+              return null;
+            });
+        return false;
+      }
+      throw failure;
+    }
   }
 
   /** Drops an unclaimed binding session so a fresh code / link can be requested. */
@@ -146,15 +185,29 @@ public final class SyncEngine {
                 + " ON CONFLICT(id) DO UPDATE SET mode=COALESCE(excluded.mode,mode),"
                 + " facts=COALESCE(excluded.facts,facts),"
                 + " hero=COALESCE(NULLIF(excluded.hero,''),hero),"
-                + " owner=COALESCE(NULLIF(excluded.owner,''),owner)",
+                + " owner=COALESCE(NULLIF(owner,''),NULLIF(excluded.owner,''))",
             new Object[] {
               id,
               Instant.now().toString(),
-              data.optString("gameMode", null),
+              data.isNull("gameMode") ? null : data.getString("gameMode"),
               data.has("victories") || data.has("prestige") ? select(data, "victories losses finalDay prestige").toString() : null,
               hero,
               owner
             });
+  }
+
+  public void saveSeasonRank(String id, String stamp, JSONObject rank) throws Exception {
+    validId(id);
+    db.transaction(() -> {
+      JSONObject session = db.session();
+      String owner = session.optString("owner");
+      if (owner.isEmpty() || !stamp.equals(session.optString("generation"))) return null;
+      db.getWritableDatabase().execSQL(
+          "UPDATE run_facts SET season_rank=? WHERE id=? AND owner=? AND mode='Ranked'"
+              + " AND ended IS NOT NULL AND season_rank IS NULL",
+          new String[] {rank.toString(), id, owner});
+      return null;
+    });
   }
 
   public void completeRun(String id, Integer prestige) {
@@ -205,7 +258,7 @@ public final class SyncEngine {
                         select(
                             battle,
                             "battleId recordedAt day hour playerHero opponentHero result durationMs"
-                                + " captureStatus"))
+                                + " captureStatus playerGold"))
                     .put(
                         "cards",
                         cleanArray(
@@ -258,13 +311,16 @@ public final class SyncEngine {
         activeSession = s;
         String owner = s.optString("owner");
         if (owner.isEmpty()) return;
-        if (System.currentTimeMillis() - s.optLong("checkedAt") > 86400000L) {
+        if (System.currentTimeMillis() - s.optLong("checkedAt") > 60000L) {
           JSONObject me = api.request("GET", "/device", s.getString("token"), null);
           if (!owner.equals(me.optString("accountId"))) throw new IOException("账号不匹配");
           db.transaction(
               () -> {
                 if (db.isCurrent(s)) {
-                  s.put("checkedAt", System.currentTimeMillis());
+                  s.put("alias", me.optString("accountAlias", s.optString("alias", "微信账号")))
+                      .put("nickname", me.optString("nickname", ""))
+                      .put("avatarUrl", me.optString("avatarUrl", ""))
+                      .put("checkedAt", System.currentTimeMillis());
                   db.session(s);
                 }
                 return null;
@@ -276,7 +332,7 @@ public final class SyncEngine {
           List<JSONObject> battles = db.records(owner, run);
           JSONObject summary;
           try {
-            summary = summarize(run, battles);
+            summary = summarize(owner, run, battles);
           } catch (Exception broken) {
             // One unreadable run must not stop the others from syncing.
             Diag.e("sync", "run summary failed · " + run, broken);
@@ -300,7 +356,7 @@ public final class SyncEngine {
               () -> {
                 if (db.isCurrent(expected)) {
                   db.session(new JSONObject());
-                  db.put("syncStatus", "登录已失效，请重新扫码");
+                  db.put("syncStatus", "设备已解绑或登录已失效，请重新扫码");
                 }
                 return null;
               });
@@ -387,7 +443,7 @@ public final class SyncEngine {
     db.put("shareRuns", enabled ? "true" : "false");
   }
 
-  private JSONObject summarize(String run, List<JSONObject> records) throws Exception {
+  private JSONObject summarize(String owner, String run, List<JSONObject> records) throws Exception {
     JSONObject last = records.isEmpty() ? null : records.get(records.size() - 1),
         b = last == null ? null : last.getJSONObject("detail").getJSONObject("battle");
     int wins = 0, losses = 0;
@@ -409,7 +465,7 @@ public final class SyncEngine {
     try (Cursor c =
         db.getReadableDatabase()
             .rawQuery(
-                "SELECT started,mode,ended,facts,hero FROM run_facts WHERE id=?",
+                "SELECT started,mode,ended,facts,hero,season_rank,owner FROM run_facts WHERE id=?",
                 new String[] {run})) {
       if (c.moveToFirst()) {
         r.put("startedAt", c.getString(0)).put("gameMode", c.getString(1));
@@ -424,6 +480,7 @@ public final class SyncEngine {
         // Prestige is captured throughout the run but only published once the run ended; historical
         // runs and older hooks simply omit it, so the mini program keeps the legacy wins/losses tier.
         if (facts != null && facts.has("prestige")) r.put("prestige", facts.get("prestige"));
+        if (!c.isNull(5) && owner.equals(c.getString(6))) r.put("seasonRank", new JSONObject(c.getString(5)));
         if (!c.isNull(2)) r.put("result", r.optInt("victories") >= 10 ? "win" : "loss");
         if (!c.isNull(2) && b == null) r.put("completedAt", c.getString(2));
       }
