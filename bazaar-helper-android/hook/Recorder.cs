@@ -141,9 +141,25 @@ internal static class Recorder
         var game = message.TryCast<NetMessageGameSim>();
         if (game == null || string.IsNullOrWhiteSpace(run))
             return;
-        var prestige = Prestige();
+        // Receive is a prefix: Data.Run still contains the previous message's prestige.
+        // In particular, the last defeat may change it to zero in this very message.
+        var prestige = game.Data.Player?.Attributes is { } attributes
+            && attributes.TryGetValue(EPlayerAttributeType.Prestige, out var updatedPrestige)
+            ? updatedPrestige : Prestige();
+        var state = game.Data.CurrentState?.StateName;
+        var completed = state is ERunState.EndRunDefeat or ERunState.EndRunVictory;
+        if (game.Data.Events is { } events)
+            for (int i = 0; i < events.Count && !completed; i++)
+                completed = events[i].TryCast<GameSimEventRunCompleted>() != null;
         if (game.Data.Run is { } progress)
             NativeBridge.UpdateRun(run, progress.Victories, progress.Defeats, progress.Day, HeroName(Data.Run?.Player?.Hero), prestige);
+        // Completion must be handled before PvP's missing-opponent / duplicate early returns.
+        if (completed)
+        {
+            NativeBridge.Complete(run, prestige);
+            if (gameMode == "Ranked") SeasonRankCapture.AwaitSettlement(run);
+            return;
+        }
         if (game.Data.CurrentState?.StateName == ERunState.PVPCombat)
         {
             var opponent = PlayerOpponent(game);
@@ -163,12 +179,6 @@ internal static class Recorder
                 return;
             opening = new Opening(run, day, hour, HeroName(live?.Player?.Hero) ?? "", opponent.Hero.ToString(), game.Data.Run?.DataVersion ?? live?.DataVersion?.ToString(), ReadEtag(), OpeningGold(game), cards);
             Log.LogInfo($"PvP opening: player={cards.Count(c => c.side == "player")}, opponent={cards.Count(c => c.side == "opponent")}, opponent hero={opponent.Hero}, enchanted={cards.Count(c => c.side == "player" && c.zone == "items" && c.enchant != null)}");
-        }
-        var state = game.Data.CurrentState?.StateName.ToString();
-        if (state is "EndRunDefeat" or "EndRunVictory")
-        {
-            NativeBridge.Complete(run, prestige);
-            if (gameMode == "Ranked") SeasonRankCapture.AwaitSettlement(run);
         }
     }
     private static List<CardRecord> OpeningCards(NetMessageGameSim message)

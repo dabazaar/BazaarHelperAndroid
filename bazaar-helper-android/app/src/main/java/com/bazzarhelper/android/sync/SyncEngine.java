@@ -183,7 +183,7 @@ public final class SyncEngine {
         .execSQL(
             "INSERT INTO run_facts(id,started,mode,facts,hero,owner) VALUES(?,?,?,?,?,?)"
                 + " ON CONFLICT(id) DO UPDATE SET mode=COALESCE(excluded.mode,mode),"
-                + " facts=COALESCE(excluded.facts,facts),"
+                + " facts=CASE WHEN ended IS NOT NULL THEN facts ELSE COALESCE(excluded.facts,facts) END,"
                 + " hero=COALESCE(NULLIF(excluded.hero,''),hero),"
                 + " owner=COALESCE(NULLIF(owner,''),NULLIF(excluded.owner,''))",
             new Object[] {
@@ -477,8 +477,15 @@ public final class SyncEngine {
           for (String key : new String[] {"victories", "losses", "finalDay"})
             if (facts.has(key)) r.put(key, facts.get(key));
         }
-        // Prestige is captured throughout the run but only published once the run ended; historical
-        // runs and older hooks simply omit it, so the mini program keeps the legacy wins/losses tier.
+        // Only game-provided cumulative counts qualify; local battle counts may be incomplete
+        // after cross-device play. ended is durable evidence, independent of cached prestige.
+        // Without that evidence keep legacy inference, including older captures that missed end.
+        if (!c.isNull(2) && facts != null && facts.has("victories") && facts.has("losses") && facts.has("finalDay"))
+          r.put("gameProgress", new JSONObject()
+              .put("victories", facts.getInt("victories"))
+              .put("losses", facts.getInt("losses"))
+              .put("day", facts.getInt("finalDay"))
+              .put("settled", true));
         if (facts != null && facts.has("prestige")) r.put("prestige", facts.get("prestige"));
         if (!c.isNull(5) && owner.equals(c.getString(6))) r.put("seasonRank", new JSONObject(c.getString(5)));
         if (!c.isNull(2)) r.put("result", r.optInt("victories") >= 10 ? "win" : "loss");
