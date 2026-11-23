@@ -1,6 +1,7 @@
 package com.bazzarhelper.android.runtime;
 
 import com.bazzarhelper.android.HelperApplication;
+import com.bazzarhelper.android.Diag;
 import org.json.JSONObject;
 
 /** The only managed hook -> app boundary; no HTTP is performed on a game callback. */
@@ -49,9 +50,11 @@ public final class CaptureBridge {
       }
       Integer prestige = payload.has("prestige") && !payload.isNull("prestige") ? payload.getInt("prestige") : null;
       HelperApplication.engine().completeRun(run, prestige);
+      Diag.i("run", "completion saved · prestige=" + prestige);
       HelperApplication.wake();
       return true;
     } catch (Exception e) {
+      Diag.i("run", "completion rejected · " + e.getClass().getSimpleName());
       return false;
     }
   }

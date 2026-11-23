@@ -175,3 +175,9 @@ python3 tools/check-apk.py build/BazaarHelper-0.1.11.apk
 - JNI 只负责转交 JSON / 账号代次；Java 工作线程负责 HTTP。两个进程用 SQLite 和上传文件锁（`<数据库文件>.upload.lock`）协调，不持有数据库事务做网络请求。
 - 回执只有数量完全匹配并且账号代次 / token 仍匹配时确认；内容指纹发生变化后会重新上传。每周刷新 token，先保存候选 token，可恢复服务端已轮换但响应丢失的情况。
 - 退出登录先立即清本机会话，撤销请求的 token 加密排队重试。本地历史按 accountId 隔离，同一账号重登可见，其他账号不能认领。
+
+### 2026-11-23 结束状态修复（本地待发布）
+
+采集器同时识别 `EndRunDefeat` / `EndRunVictory` 与 `GameSimEventRunCompleted`，优先使用本次消息的威望，避免 Receive 前置 Hook 读到结算前缓存。明确结束且存在游戏累计胜负/天数时，同步 `gameProgress.settled=true`；缺少结束证据的旧数据保留原推断路径。迟到的进度更新不能覆盖本地已结算快照。导出日志新增结算保存/拒绝记录，不含账号凭据。
+
+新增 `TEST_RUNNER=RunCompletionTests python3 tools/test-device.py`，在独立 SQLite 库和模拟 HTTP 下验证结算重传、正值/零威望、迟到更新、重启回执及缺失累计值。实战 IL2CPP 结算仍需真机验收；普通诊断 zip 不包含逐局数据库，不能据此回填具体旧战绩。
